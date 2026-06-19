@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #05080c;
+  color: #cfe8d4;
+  font-family: var(--font-mono);
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: rgba(57,255,122,0.3); }
+
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 99px; }
+
+@layer components {
+  .panel {
+    background: rgba(10, 15, 22, 0.8);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid var(--border, #13201a);
+    border-radius: 12px;
+    box-shadow: inset 0 1px rgba(255,255,255,0.03);
+  }
+  .label {
+    font-size: 9px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: #5a6b5f;
+  }
+}
+
+input[type='range'] { accent-color: #39ff7a; }
+
+input[type='text'], select {
+  background: rgba(255,255,255,0.03);
+  border: 1px solid #13201a;
+  color: #cfe8d4;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+input[type='text']:focus, select:focus { border-color: #39ff7a; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  padding: 0.5rem 0.9rem;
+  font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: #cfe8d4;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid #13201a;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.22,1,0.36,1);
+}
+.btn:hover { border-color: #39ff7a; color: #39ff7a; }
+.btn-primary { border-color: #39ff7a; color: #39ff7a; }
+
+/* CRT flicker on the viewport */
+@keyframes crt-flicker {
+  0%, 100% { opacity: 1; }
+  92% { opacity: 1; }
+  93% { opacity: 0.7; }
+  94% { opacity: 1; }
+  97% { opacity: 0.85; }
+  98% { opacity: 1; }
+}
+.crt-flicker { animation: crt-flicker 6s infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}
