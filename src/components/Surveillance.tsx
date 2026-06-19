@@ -14,6 +14,9 @@ import { useDetector, type Detection } from '@/hooks/useDetector';
  * - 100% client-side
  */
 
+interface TrailPt {
+  x: number; y: number; w: number; h: number; // normalized
+}
 interface TrackedBox {
   id: number;
   x: number; // 0..1 normalized
@@ -23,7 +26,10 @@ interface TrackedBox {
   label: string;
   conf: number;
   missed: number; // frames since last matched
+  trail: TrailPt[];
 }
+
+const TRAIL_LEN = 24;
 
 interface BlinkBox {
   x: number; y: number; w: number; h: number; // 0..1
@@ -37,6 +43,7 @@ interface Settings {
   camLabel: string;
   freeText: string;
   showDetection: boolean;
+  showTrails: boolean;
   showBlink: boolean;
   showScanlines: boolean;
   showGlitch: boolean;
@@ -48,6 +55,7 @@ const DEFAULTS: Settings = {
   camLabel: 'CAM-01 // SECTOR 7',
   freeText: 'AUTHORIZED PERSONNEL ONLY',
   showDetection: true,
+  showTrails: true,
   showBlink: true,
   showScanlines: true,
   showGlitch: true,
@@ -69,9 +77,13 @@ export function Surveillance() {
 
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
+  const [recording, setRecording] = useState(false);
   const [settings, setSettings] = useState<Settings>(DEFAULTS);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
   const { detect, status } = useDetector();
 
@@ -92,6 +104,42 @@ export function Surveillance() {
     if (!v) return;
     if (v.paused) { v.play(); setPlaying(true); }
     else { v.pause(); setPlaying(false); }
+  }, []);
+
+  // Start recording the processed canvas output
+  const startRecording = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || recording) return;
+    try {
+      const stream = canvas.captureStream(30);
+      const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
+        ? 'video/webm;codecs=vp9'
+        : 'video/webm';
+      const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 4_000_000 });
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data); };
+      rec.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `surveillance-${Date.now()}.webm`;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      };
+      rec.start();
+      recorderRef.current = rec;
+      setRecording(true);
+    } catch (e) {
+      console.error('Recording failed', e);
+    }
+  }, [recording]);
+
+  const stopRecording = useCallback(() => {
+    const rec = recorderRef.current;
+    if (rec && rec.state !== 'inactive') rec.stop();
+    recorderRef.current = null;
+    setRecording(false);
   }, []);
 
   /** Match new detections to existing tracked boxes (IoU), smooth with lerp. */
@@ -134,11 +182,13 @@ export function Surveillance() {
         t.label = d.label;
         t.conf = d.conf;
         t.missed = 0;
+        t.trail.push({ x: t.x, y: t.y, w: t.w, h: t.h });
+        if (t.trail.length > TRAIL_LEN) t.trail.shift();
       }
     }
     for (let i = 0; i < norm.length; i++) {
       if (usedDet.has(i)) continue;
-      tracked.push({ id: nextIdRef.current++, ...norm[i], missed: 0 });
+      tracked.push({ id: nextIdRef.current++, ...norm[i], missed: 0, trail: [{ ...norm[i] }] });
     }
     trackedRef.current = tracked;
   }, []);
@@ -189,7 +239,10 @@ export function Surveillance() {
           .filter((b) => b.missed < 8);
 
         if (s.showDetection) {
-          for (const b of trackedRef.current) drawBox(ctx, b, W, H, s.boxColor, false);
+          for (const b of trackedRef.current) {
+            if (s.showTrails) drawTrail(ctx, b, W, H, s.boxColor);
+            drawBox(ctx, b, W, H, s.boxColor, false);
+          }
         }
 
         // --- fake blink boxes ---
@@ -285,6 +338,11 @@ export function Surveillance() {
                 ⚠ model failed — blink mode only
               </div>
             )}
+            {recording && (
+              <div className="absolute left-3 top-12 flex items-center gap-1.5 rounded border border-[#ff3b3b]/40 bg-bg/80 px-3 py-1.5 text-[10px] tracking-widest uppercase" style={{ color: '#ff3b3b' }}>
+                <span className="crt-flicker">●</span> RECORDING
+              </div>
+            )}
 
             {!videoUrl && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-bg/90 p-6 text-center">
@@ -305,7 +363,7 @@ export function Surveillance() {
           </div>
 
           {videoUrl && (
-            <div className="mt-3 flex items-center gap-3">
+            <div className="mt-3 flex flex-wrap items-center gap-3">
               <button className="btn" onClick={togglePlay}>
                 {playing ? '❚❚ Pause' : '▶ Play'}
               </button>
@@ -313,6 +371,13 @@ export function Surveillance() {
                 ⟲ Change video
                 <input type="file" accept="video/*" onChange={onFile} className="hidden" />
               </label>
+              <button
+                className="btn"
+                style={recording ? { borderColor: '#ff3b3b', color: '#ff3b3b' } : undefined}
+                onClick={recording ? stopRecording : startRecording}
+              >
+                {recording ? '■ Stop & save' : '● Record'}
+              </button>
               <span className="ml-auto text-[10px] tracking-widest text-muted">
                 AI · LOCAL · NOT UPLOADED
               </span>
@@ -337,6 +402,7 @@ export function Surveillance() {
             <div className="label mb-2">Layers</div>
             <div className="space-y-2">
               <Toggle label="AI detection" on={settings.showDetection} set={(v) => setSettings((s) => ({ ...s, showDetection: v }))} />
+              <Toggle label="Motion trails" on={settings.showTrails} set={(v) => setSettings((s) => ({ ...s, showTrails: v }))} />
               <Toggle label="Blink boxes" on={settings.showBlink} set={(v) => setSettings((s) => ({ ...s, showBlink: v }))} />
               <Toggle label="Scanlines" on={settings.showScanlines} set={(v) => setSettings((s) => ({ ...s, showScanlines: v }))} />
               <Toggle label="Glitches" on={settings.showGlitch} set={(v) => setSettings((s) => ({ ...s, showGlitch: v }))} />
@@ -358,6 +424,25 @@ function iou(a: { x: number; y: number; w: number; h: number }, b: { x: number; 
   const inter = ix * iy;
   const union = a.w * a.h + b.w * b.h - inter;
   return union > 0 ? inter / union : 0;
+}
+
+/** Draw a fading motion trail of past box centers. */
+function drawTrail(ctx: CanvasRenderingContext2D, b: TrackedBox, W: number, H: number, color: string) {
+  const trail = b.trail;
+  if (trail.length < 2) return;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  for (let i = 1; i < trail.length; i++) {
+    const p0 = trail[i - 1];
+    const p1 = trail[i];
+    const a = (i / trail.length) * 0.5; // fade older → newer
+    ctx.globalAlpha = a;
+    ctx.beginPath();
+    ctx.moveTo((p0.x + p0.w / 2) * W, (p0.y + p0.h / 2) * H);
+    ctx.lineTo((p1.x + p1.w / 2) * W, (p1.y + p1.h / 2) * H);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
 }
 
 function drawBox(ctx: CanvasRenderingContext2D, b: TrackedBox, W: number, H: number, color: string, isFake: boolean, fakeFade?: number) {
