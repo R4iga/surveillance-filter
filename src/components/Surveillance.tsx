@@ -45,6 +45,8 @@ interface Settings {
   showDetection: boolean;
   showLaserLines: boolean;
   showTrails: boolean;
+  showSmallMotion: boolean;
+  smallSensitivity: number; // 0..1, lower = more sensitive
   showBlink: boolean;
   showScanlines: boolean;
   showGlitch: boolean;
@@ -58,6 +60,8 @@ const DEFAULTS: Settings = {
   showDetection: true,
   showLaserLines: true,
   showTrails: true,
+  showSmallMotion: false,
+  smallSensitivity: 0.25,
   showBlink: true,
   showScanlines: true,
   showGlitch: true,
@@ -76,6 +80,13 @@ export function Surveillance() {
   const glitchRef = useRef(0);
   const startTimeRef = useRef(0);
   const detectingRef = useRef(false);
+
+  // small-object motion layer (background subtraction)
+  const bgSampleRef = useRef<HTMLCanvasElement | null>(null);
+  const bgRef = useRef<Float32Array | null>(null); // running background model
+  const smallBoxesRef = useRef<{ x: number; y: number; w: number; h: number }[]>([]);
+  const BG_W = 96;
+  const BG_H = 54;
 
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [playing, setPlaying] = useState(false);
@@ -99,6 +110,8 @@ export function Surveillance() {
     setPlaying(false);
     trackedRef.current = [];
     blinkRef.current = [];
+    smallBoxesRef.current = [];
+    bgRef.current = null; // relearn background for new video
   }, [videoUrl]);
 
   const togglePlay = useCallback(() => {
@@ -204,6 +217,13 @@ export function Surveillance() {
     if (!ctx) return;
     const W = canvas.width;
     const H = canvas.height;
+    // set up the small-object background sample canvas
+    if (!bgSampleRef.current) {
+      const c = document.createElement('canvas');
+      c.width = BG_W; c.height = BG_H;
+      bgSampleRef.current = c;
+    }
+    const bgCtx = bgSampleRef.current.getContext('2d', { willReadFrequently: true });
     startTimeRef.current = performance.now();
 
     const draw = () => {
@@ -233,6 +253,62 @@ export function Surveillance() {
             detectingRef.current = false;
             if (dets.length) updateTracked(dets, fit, W, H);
           }).catch(() => { detectingRef.current = false; });
+        }
+
+        // --- small-object motion layer (background subtraction) ---
+        // Catches tiny moving things no AI model has a class for: snow, rain, dust, particles.
+        if (s.showSmallMotion && bgCtx) {
+          bgCtx.drawImage(v, 0, 0, BG_W, BG_H);
+          const cur = bgCtx.getImageData(0, 0, BG_W, BG_H).data;
+          if (!bgRef.current) {
+            // first frame: initialize the running background model
+            const bg = new Float32Array(BG_W * BG_H);
+            for (let i = 0; i < bg.length; i++) {
+              const di = i * 4;
+              bg[i] = (cur[di] + cur[di + 1] + cur[di + 2]) / 3;
+            }
+            bgRef.current = bg;
+            smallBoxesRef.current = [];
+          } else {
+            const bg = bgRef.current;
+            const mask = new Uint8Array(BG_W * BG_H);
+            const LEARN = 0.04; // background adapts slowly
+            const thresh = s.smallSensitivity * 255;
+            for (let i = 0; i < bg.length; i++) {
+              const di = i * 4;
+              const lum = (cur[di] + cur[di + 1] + cur[di + 2]) / 3;
+              const diff = Math.abs(lum - bg[i]);
+              if (diff > thresh) mask[i] = 1;
+              // update background (slowly, so static scene is learned, moving things don't poison it)
+              bg[i] += (lum - bg[i]) * LEARN;
+            }
+            // cluster small regions into tiny boxes
+            const raw = clusterSmall(mask, BG_W, BG_H, 1, 6); // 1..6 cells per cluster
+            smallBoxesRef.current = raw.map((b) => ({
+              x: b.x / BG_W,
+              y: b.y / BG_H,
+              w: b.w / BG_W,
+              h: b.h / BG_H,
+            }));
+          }
+        } else if (!s.showSmallMotion) {
+          smallBoxesRef.current = [];
+        }
+
+        // draw small-motion boxes (smaller, dimmer, different style)
+        if (s.showSmallMotion) {
+          ctx.strokeStyle = s.boxColor;
+          ctx.fillStyle = s.boxColor;
+          ctx.lineWidth = 1;
+          for (const b of smallBoxesRef.current) {
+            const x = b.x * W, y = b.y * H, w = b.w * W, h = b.h * H;
+            ctx.globalAlpha = 0.6;
+            ctx.strokeRect(x, y, Math.max(4, w), Math.max(4, h));
+            // tiny corner dot to mark it as a small contact
+            ctx.globalAlpha = 0.9;
+            ctx.fillRect(x - 1, y - 1, 2, 2);
+          }
+          ctx.globalAlpha = 1;
         }
 
         // age tracked boxes (drop stale ones)
@@ -429,16 +505,68 @@ export function Surveillance() {
               <Toggle label="AI detection" on={settings.showDetection} set={(v) => setSettings((s) => ({ ...s, showDetection: v }))} />
               <Toggle label="Laser lines" on={settings.showLaserLines} set={(v) => setSettings((s) => ({ ...s, showLaserLines: v }))} />
               <Toggle label="Motion trails" on={settings.showTrails} set={(v) => setSettings((s) => ({ ...s, showTrails: v }))} />
+              <Toggle label="Small motion (snow/rain)" on={settings.showSmallMotion} set={(v) => setSettings((s) => ({ ...s, showSmallMotion: v }))} />
               <Toggle label="Blink boxes" on={settings.showBlink} set={(v) => setSettings((s) => ({ ...s, showBlink: v }))} />
               <Toggle label="Scanlines" on={settings.showScanlines} set={(v) => setSettings((s) => ({ ...s, showScanlines: v }))} />
               <Toggle label="Glitches" on={settings.showGlitch} set={(v) => setSettings((s) => ({ ...s, showGlitch: v }))} />
               <Toggle label="Crosshair" on={settings.showCrosshair} set={(v) => setSettings((s) => ({ ...s, showCrosshair: v }))} />
             </div>
+            {settings.showSmallMotion && (
+              <div className="mt-3">
+                <div className="label mb-2">Motion sensitivity · {Math.round(settings.smallSensitivity * 100)}%</div>
+                <input
+                  type="range"
+                  min={5}
+                  max={60}
+                  value={Math.round(settings.smallSensitivity * 100)}
+                  onChange={(e) => setSettings((s) => ({ ...s, smallSensitivity: Number(e.target.value) / 100 }))}
+                  className="w-full"
+                />
+                <p className="mt-1 text-[10px] leading-snug text-muted">
+                  Lower = catches subtler motion (light snow). Higher = only strong motion. The background is learned automatically.
+                </p>
+              </div>
+            )}
           </div>
         </aside>
       </div>
     </div>
   );
+}
+
+/** Cluster small motion regions (for snow/rain/dust). Restricts cluster size to [min,max] cells. */
+function clusterSmall(grid: Uint8Array, gw: number, gh: number, minCells: number, maxCells: number): { x: number; y: number; w: number; h: number }[] {
+  const boxes: { x: number; y: number; w: number; h: number }[] = [];
+  const visited = new Uint8Array(grid.length);
+  for (let y = 0; y < gh; y++) {
+    for (let x = 0; x < gw; x++) {
+      const idx = y * gw + x;
+      if (!grid[idx] || visited[idx]) continue;
+      let minX = x, maxX = x, minY = y, maxY = y, count = 0;
+      const stack = [idx];
+      while (stack.length) {
+        const i = stack.pop()!;
+        if (visited[i] || !grid[i]) continue;
+        visited[i] = 1;
+        count++;
+        if (count > maxCells) break; // too big — skip (it's not a small object)
+        const cx = i % gw;
+        const cy = (i / gw) | 0;
+        if (cx < minX) minX = cx;
+        if (cx > maxX) maxX = cx;
+        if (cy < minY) minY = cy;
+        if (cy > maxY) maxY = cy;
+        if (cx > 0) stack.push(i - 1);
+        if (cx < gw - 1) stack.push(i + 1);
+        if (cy > 0) stack.push(i - gw);
+        if (cy < gh - 1) stack.push(i + gw);
+      }
+      if (count >= minCells && count <= maxCells) {
+        boxes.push({ x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 });
+      }
+    }
+  }
+  return boxes;
 }
 
 /** Intersection-over-Union of two normalized boxes. */
