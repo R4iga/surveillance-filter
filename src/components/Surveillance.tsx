@@ -43,6 +43,7 @@ interface Settings {
   camLabel: string;
   freeText: string;
   showDetection: boolean;
+  showLaserLines: boolean;
   showTrails: boolean;
   showBlink: boolean;
   showScanlines: boolean;
@@ -55,6 +56,7 @@ const DEFAULTS: Settings = {
   camLabel: 'CAM-01 // SECTOR 7',
   freeText: 'AUTHORIZED PERSONNEL ONLY',
   showDetection: true,
+  showLaserLines: true,
   showTrails: true,
   showBlink: true,
   showScanlines: true,
@@ -239,6 +241,29 @@ export function Surveillance() {
           .filter((b) => b.missed < 8);
 
         if (s.showDetection) {
+          // laser lines from screen center to each tracked box
+          if (s.showLaserLines) {
+            const cx = W / 2, cy = H / 2;
+            ctx.strokeStyle = s.boxColor;
+            ctx.lineWidth = 1;
+            for (const b of trackedRef.current) {
+              if (b.missed >= 3) continue;
+              const bx = (b.x + b.w / 2) * W;
+              const by = (b.y + b.h / 2) * H;
+              ctx.globalAlpha = 0.5;
+              ctx.beginPath();
+              ctx.moveTo(cx, cy);
+              ctx.lineTo(bx, by);
+              ctx.stroke();
+              // range readout near the box
+              const dist = Math.round(Math.hypot(bx - cx, by - cy));
+              ctx.fillStyle = s.boxColor;
+              ctx.globalAlpha = 0.75;
+              ctx.font = '10px "JetBrains Mono", monospace';
+              ctx.fillText(`R ${dist}`, bx + 4, by + 12);
+            }
+            ctx.globalAlpha = 1;
+          }
           for (const b of trackedRef.current) {
             if (s.showTrails) drawTrail(ctx, b, W, H, s.boxColor);
             drawBox(ctx, b, W, H, s.boxColor, false);
@@ -402,6 +427,7 @@ export function Surveillance() {
             <div className="label mb-2">Layers</div>
             <div className="space-y-2">
               <Toggle label="AI detection" on={settings.showDetection} set={(v) => setSettings((s) => ({ ...s, showDetection: v }))} />
+              <Toggle label="Laser lines" on={settings.showLaserLines} set={(v) => setSettings((s) => ({ ...s, showLaserLines: v }))} />
               <Toggle label="Motion trails" on={settings.showTrails} set={(v) => setSettings((s) => ({ ...s, showTrails: v }))} />
               <Toggle label="Blink boxes" on={settings.showBlink} set={(v) => setSettings((s) => ({ ...s, showBlink: v }))} />
               <Toggle label="Scanlines" on={settings.showScanlines} set={(v) => setSettings((s) => ({ ...s, showScanlines: v }))} />
